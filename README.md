@@ -59,7 +59,7 @@ pnpm --dir frontend install --frozen-lockfile
 
 仓库若仍为私有，需要使用有访问权限的 GitHub 账号克隆。
 
-打开 **http://127.0.0.1:8080**。初始化生成的管理员用户名和随机密码位于项目根目录 `connections.env`，首次默认用户名为 `admin@claude-proxy.local`。重复初始化保留现有配置和凭据。
+打开 [http://127.0.0.1:8080](http://127.0.0.1:8080)。初始化生成的管理员用户名和随机密码位于项目根目录 `connections.env`，首次默认用户名为 `admin@claude-proxy.local`。重复初始化保留现有配置和凭据。
 
 | 本地文件 | 用途 |
 | --- | --- |
