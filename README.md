@@ -1,6 +1,6 @@
 # Claude Code Proxy RS
 
-面向 Claude Code 的自托管多账号网关，使用 Rust 构建，提供 Vue 管理端。
+面向 Claude Code 的自托管多账号网关，使用 Rust 构建，提供 Vue 管理端。 (AI&未完成改造版)
 
 **Rust · Tokio · Axum · Vue 3 · PostgreSQL · Redis**
 
