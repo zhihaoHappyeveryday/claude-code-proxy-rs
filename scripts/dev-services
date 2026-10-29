@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_HOME="${CC_PROXY_DEV_HOME:-$PROJECT_DIR}"
+
+# 复用本机已有 Docker 运行时；只操作本项目的 Compose 资源。
+if [[ -f "$HOME/DevSoftware/local-middleware/env.sh" ]]; then
+  source "$HOME/DevSoftware/local-middleware/env.sh"
+fi
+
+if [[ ! -f "$DEV_HOME/.env" ]]; then
+  echo "缺少 $DEV_HOME/.env，请参考 docs/development.md。" >&2
+  exit 1
+fi
+
+if [[ $# -eq 0 ]]; then
+  set -- ps
+fi
+
+compose=(docker compose --project-name claude-code-proxy-dev
+  --env-file "$DEV_HOME/.env" --file "$PROJECT_DIR/deploy/compose.dev.yaml")
+
+if [[ "$1" == init ]]; then
+  "${compose[@]}" up -d --wait --wait-timeout 120
+  # 通过标准输入执行，不依赖 Docker 虚拟机共享项目目录。
+  "${compose[@]}" exec -T postgres psql -v ON_ERROR_STOP=1 \
+    -U claude_code_proxy -d claude_code_proxy \
+    < "$PROJECT_DIR/deploy/postgres-init/01-test-database.sql"
+else
+  exec "${compose[@]}" "$@"
+fi

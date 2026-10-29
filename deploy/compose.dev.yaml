@@ -1,0 +1,49 @@
+name: claude-code-proxy-dev
+
+services:
+  postgres:
+    image: postgres:18-bookworm@sha256:bbf83594798e144bff365a9c191c5d779f181fb3135902064ab8ff11918020fc
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: claude_code_proxy
+      POSTGRES_DB: claude_code_proxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}
+    command: [postgres, -c, shared_buffers=32MB, -c, max_connections=30]
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      # PostgreSQL 18 的数据目录位于此路径下的版本子目录。
+      - postgres-data:/var/lib/postgresql
+    mem_limit: 384m
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U claude_code_proxy -d claude_code_proxy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+
+  redis:
+    image: redis:8-alpine@sha256:0bf6577d7774e592b29d093e3ac9390eb91e13d72c21e506afce736de5e0eeb0
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Missing REDIS_PASSWORD}
+    # 二次调用官方入口，确保 redis-server 最终以 redis 用户运行。
+    command:
+      - sh
+      - -c
+      - 'exec /usr/local/bin/docker-entrypoint.sh redis-server --appendonly yes --maxmemory 64mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"'
+    ports:
+      - "127.0.0.1:16379:6379"
+    volumes:
+      - redis-data:/data
+    mem_limit: 192m
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -qx PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  postgres-data:
+  redis-data:

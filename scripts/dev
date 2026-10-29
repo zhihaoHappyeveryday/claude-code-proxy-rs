@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""本地开发入口：生成私有配置，运行继承的前后端与测试。"""
+
+import json
+import os
+from pathlib import Path
+import secrets
+import shutil
+import subprocess
+import sys
+from urllib.parse import quote, urlsplit, urlunsplit
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def read_env(path):
+    return dict(
+        line.split("=", 1)
+        for line in path.read_text().splitlines()
+        if line and not line.startswith("#") and "=" in line
+    )
+
+
+def private_write(path, content):
+    # 创建时就限制权限，避免写完后才收紧敏感文件。
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
+        file.write(content)
+
+
+def without_password(value):
+    url = urlsplit(value)
+    authority = url.netloc.rsplit("@", 1)[-1]
+    if url.username:
+        authority = f"{url.username}@{authority}"
+    return urlunsplit((url.scheme, authority, url.path, url.query, url.fragment))
+
+
+def initialize():
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        private_write(env_path, f"POSTGRES_PASSWORD={secrets.token_hex(32)}\nREDIS_PASSWORD={secrets.token_hex(32)}\n")
+    credentials = read_env(env_path)
+    connections_path = ROOT / "connections.env"
+    if not connections_path.exists():
+        pg = quote(credentials["POSTGRES_PASSWORD"], safe="")
+        redis = quote(credentials["REDIS_PASSWORD"], safe="")
+        private_write(connections_path,
+            f"DATABASE_URL=postgresql://claude_code_proxy:{pg}@127.0.0.1:15432/claude_code_proxy\n"
+            f"TEST_DATABASE_URL=postgresql://claude_code_proxy:{pg}@127.0.0.1:15432/claude_code_proxy_test\n"
+            f"REDIS_URL=redis://:{redis}@127.0.0.1:16379/0\n"
+            f"TEST_REDIS_URL=redis://:{redis}@127.0.0.1:16379/15\n")
+    subprocess.run([str(ROOT / "scripts/dev-services"), "init"], check=True)
+    config_path = ROOT / "deploy/config.yaml"
+    if config_path.exists():
+        print("保留现有 deploy/config.yaml")
+        return
+    connections = read_env(connections_path)
+    username = connections.get("ADMIN_USERNAME", "admin@claude-proxy.local")
+    password = connections.get("ADMIN_PASSWORD") or secrets.token_hex(24)
+    config = (ROOT / "deploy/config.example.yaml").read_text()
+    replacements = {
+        "url: 'postgres://codex_proxy@127.0.0.1:5432/codex_proxy'":
+            f"url: {json.dumps(without_password(connections['DATABASE_URL']))}",
+        "url: 'redis://127.0.0.1:6379/'":
+            f"url: {json.dumps(without_password(connections['REDIS_URL']))}",
+        "password: &postgres_password ''":
+            f"password: &postgres_password {json.dumps(credentials['POSTGRES_PASSWORD'])}",
+        "password: &redis_password ''":
+            f"password: &redis_password {json.dumps(credentials['REDIS_PASSWORD'])}",
+        "default_username: 'admin@cpr.local'": f"default_username: {json.dumps(username)}",
+        "default_password: ''": f"default_password: {json.dumps(password)}",
+        "\nadmin:\n": "\n  pool:\n    max_connections: 6\n\nadmin:\n",
+    }
+    for original, replacement in replacements.items():
+        if config.count(original) != 1:
+            raise SystemExit("配置模板已变化，请检查 scripts/dev 的模板映射")
+        config = config.replace(original, replacement)
+    if "ADMIN_PASSWORD" not in connections:
+        with connections_path.open("a") as file:
+            file.write(f"ADMIN_USERNAME={username}\nADMIN_PASSWORD={password}\n")
+    private_write(config_path, config)
+    print("已生成 deploy/config.yaml；管理员凭据位于 connections.env")
+
+
+def environment():
+    env = os.environ.copy()
+    # 仅读取部署的非敏感出口约束；数据库及代理密码不进入环境快照。
+    local_env = ROOT / ".env"
+    if local_env.exists():
+        proxy_endpoint = read_env(local_env).get("CPR_CLAUDE_REQUIRED_PROXY_ENDPOINT")
+        if proxy_endpoint:
+            env.setdefault("CPR_CLAUDE_REQUIRED_PROXY_ENDPOINT", proxy_endpoint)
+    rust = Path.home() / "DevSoftware/rust"
+    paths = []
+    if rust.is_dir():
+        env.setdefault("CARGO_HOME", str(rust / "cargo"))
+        env.setdefault("RUSTUP_HOME", str(rust / "rustup"))
+        paths.append(str(Path(env["CARGO_HOME"]) / "bin"))
+    tls_build = Path.home() / "DevSoftware/tls-build/bin"
+    if tls_build.is_dir():
+        paths.append(str(tls_build))
+    pnpm = Path.home() / "DevSoftware/pnpm/bin"
+    if pnpm.is_dir():
+        paths.append(str(pnpm))
+    # 本地运行备份与恢复测试时使用 PostgreSQL 18 客户端，不启动本机数据库。
+    postgres = Path.home() / "DevSoftware/postgresql/Postgres.app/Contents/Versions/18/bin"
+    if postgres.is_dir():
+        paths.append(str(postgres))
+    env["PATH"] = os.pathsep.join([*paths, env.get("PATH", "")])
+    env.setdefault("RUST_MIN_STACK", "16777216")
+    # 本次依赖包含固定 Git 修复，系统 Git 在此网络下比 libgit2 更稳定。
+    env.setdefault("CARGO_NET_GIT_FETCH_WITH_CLI", "true")
+    return env
+
+
+def main():
+    os.chdir(ROOT)
+    action = sys.argv[1] if len(sys.argv) > 1 else "help"
+    if action == "init":
+        initialize()
+        return
+    cargo = ["cargo", "--manifest-path", "backend/Cargo.toml"]
+    commands = {
+        "backend": [cargo[0], "run", *cargo[1:], "-p", "claude-code-proxy-rs", "--locked"],
+        "frontend": ["pnpm", "--dir", "frontend", "dev", "--host", "127.0.0.1"],
+        "build-web": ["pnpm", "--dir", "frontend", "build"],
+        "check": [cargo[0], "check", *cargo[1:], "--workspace", "--all-targets", "--locked"],
+        "test": [cargo[0], "test", *cargo[1:], "--workspace", "--test", "main", "--locked", "--", "--test-threads=1"],
+    }
+    if action not in commands:
+        print("用法：./scripts/dev init|backend|frontend|build-web|check|test")
+        return
+    env = environment()
+    if action == "test":
+        missing = [name for name in ("pg_dump", "psql") if not shutil.which(name, path=env["PATH"])]
+        if missing:
+            raise SystemExit("缺少 PostgreSQL 18 客户端工具：" + ", ".join(missing)
+                             + "；请参考 docs/development.md")
+        connections = read_env(ROOT / "connections.env")
+        env["CPR_TEST_DATABASE_URL"] = connections["TEST_DATABASE_URL"]
+        redis = urlsplit(connections["REDIS_URL"])
+        env["CPR_TEST_REDIS_URL"] = connections.get(
+            "TEST_REDIS_URL", urlunsplit((redis.scheme, redis.netloc, "/15", redis.query, ""))
+        )
+        for name in ("CPR_DATABASE_URL", "CPR_REDIS_URL", "CPR_DATABASE_PASSWORD", "CPR_REDIS_PASSWORD"):
+            env.pop(name, None)
+    os.execvpe(commands[action][0], commands[action], env)
+
+
+if __name__ == "__main__":
+    main()

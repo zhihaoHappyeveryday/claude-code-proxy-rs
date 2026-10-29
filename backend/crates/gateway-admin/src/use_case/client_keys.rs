@@ -1,0 +1,312 @@
+//! Client API Key 管理用例
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use gateway_core::{
+    engine::budget::ClientBudgetStatus, policy::ClientApiKeyId, runtime::SnapshotControl,
+};
+use rand_core::{OsRng, RngCore as _};
+use uuid::Uuid;
+
+use crate::{
+    model::{
+        AdminError, MutationContext,
+        client_keys::{
+            ClientKeyBudgetMutationOrigin, ClientKeyCursorValue, ClientKeyListQuery,
+            ClientKeyMutation, ClientKeyPage, ClientKeyRecord, ClientKeySecret, ClientKeySortField,
+            CreateClientKey, CreatedClientKey, DeleteClientKey, NewClientKey, ResetClientKeyBudget,
+            SetClientKeyEnabled, UpdateClientKey, UpdateClientKeyBudgetLimits,
+        },
+    },
+    ports::store::{AdminStoreError, AdminStoreErrorKind, ClientKeyStore},
+};
+
+use super::{map_store_error, publish_committed};
+
+/// API 消费的 Client Key 管理服务
+#[async_trait]
+pub trait ClientKeyService: Send + Sync {
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError>;
+    async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError>;
+    async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError>;
+    async fn create(
+        &self,
+        context: &MutationContext,
+        command: CreateClientKey,
+    ) -> Result<CreatedClientKey, AdminError>;
+    async fn update(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKey,
+    ) -> Result<ClientKeyMutation, AdminError>;
+    async fn set_enabled(
+        &self,
+        context: &MutationContext,
+        command: SetClientKeyEnabled,
+    ) -> Result<ClientKeyMutation, AdminError>;
+    async fn delete(
+        &self,
+        context: &MutationContext,
+        command: DeleteClientKey,
+    ) -> Result<ClientKeyMutation, AdminError>;
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError>;
+    async fn update_budget_limits(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKeyBudgetLimits,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError>;
+    async fn reset_budget(
+        &self,
+        context: &MutationContext,
+        command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError>;
+}
+
+pub(crate) struct DefaultClientKeyService {
+    providers: crate::ports::provider::ProviderAdminRegistry,
+    store: Arc<dyn ClientKeyStore>,
+    snapshot: Arc<dyn SnapshotControl>,
+}
+
+impl DefaultClientKeyService {
+    #[must_use]
+    pub(crate) fn new(
+        store: Arc<dyn ClientKeyStore>,
+        snapshot: Arc<dyn SnapshotControl>,
+        providers: crate::ports::provider::ProviderAdminRegistry,
+    ) -> Self {
+        Self {
+            store,
+            snapshot,
+            providers,
+        }
+    }
+}
+
+#[async_trait]
+impl ClientKeyService for DefaultClientKeyService {
+    async fn get(&self, id: &ClientApiKeyId) -> Result<ClientKeyRecord, AdminError> {
+        self.store
+            .get_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
+    }
+
+    async fn budget(&self, id: &ClientApiKeyId) -> Result<ClientBudgetStatus, AdminError> {
+        self.get(id).await.map(|key| key.budget)
+    }
+
+    async fn update_budget_limits(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKeyBudgetLimits,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        if command.daily_limit_usd.is_none() && command.weekly_limit_usd.is_none() {
+            return Err(AdminError::invalid("至少指定一个预算上限"));
+        }
+        let id = command.id.clone();
+        if let Some(revision) = self
+            .store
+            .update_client_key_budget_limits(command, origin, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+        {
+            publish_committed(self.snapshot.as_ref(), revision).await?;
+        }
+        Ok(id)
+    }
+
+    async fn reset_budget(
+        &self,
+        context: &MutationContext,
+        command: ResetClientKeyBudget,
+        origin: ClientKeyBudgetMutationOrigin,
+    ) -> Result<ClientApiKeyId, AdminError> {
+        let id = command.id.clone();
+        self.store
+            .reset_client_key_budget(command, origin, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?;
+        Ok(id)
+    }
+
+    async fn list(&self, query: ClientKeyListQuery) -> Result<ClientKeyPage, AdminError> {
+        validate_cursor(&query)?;
+        self.store
+            .list_client_keys(query)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))
+    }
+
+    async fn reveal(&self, id: &ClientApiKeyId) -> Result<ClientKeySecret, AdminError> {
+        self.store
+            .reveal_client_key(id)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?
+            .ok_or_else(|| AdminError::not_found("Client API Key 不存在"))
+    }
+
+    async fn create(
+        &self,
+        context: &MutationContext,
+        command: CreateClientKey,
+    ) -> Result<CreatedClientKey, AdminError> {
+        crate::model::client_keys::validate_group_ids(&command.group_ids)
+            .map_err(|_| AdminError::invalid("Client API Key 分组不合法"))?;
+        for (provider, profile) in &command.request_profile_overrides {
+            self.providers
+                .require(provider)
+                .and_then(|provider| provider.preview_client_profile(profile))
+                .map_err(|error| super::map_provider_error(error, "client profile"))?;
+        }
+        let id = ClientApiKeyId::new(format!("key_{}", Uuid::now_v7().simple()))
+            .map_err(|_| AdminError::internal("创建 Client API Key ID 失败"))?;
+        let plaintext = if let Some(key) = command.custom_key {
+            key.expose_for_auth().to_owned()
+        } else {
+            generate_key()
+        };
+        let (config_revision, record) = self
+            .store
+            .create_client_key(
+                NewClientKey {
+                    request_profile_overrides: command.request_profile_overrides,
+                    id,
+                    name: command.name,
+                    label: command.label,
+                    group_ids: command.group_ids,
+                    limits: command.limits,
+                    budget: command.budget,
+                    plaintext: plaintext.clone(),
+                },
+                context,
+            )
+            .await
+            .map_err(map_client_key_write_error)?;
+        publish_committed(self.snapshot.as_ref(), config_revision).await?;
+        Ok(CreatedClientKey {
+            config_revision,
+            secret: ClientKeySecret::new(record, plaintext),
+        })
+    }
+
+    async fn update(
+        &self,
+        context: &MutationContext,
+        command: UpdateClientKey,
+    ) -> Result<ClientKeyMutation, AdminError> {
+        crate::model::client_keys::validate_group_ids(&command.group_ids)
+            .map_err(|_| AdminError::invalid("Client API Key 分组不合法"))?;
+        for (provider, profile) in &command.request_profile_override_updates {
+            if let Some(profile) = profile {
+                self.providers
+                    .require(provider)
+                    .and_then(|provider| provider.preview_client_profile(profile))
+                    .map_err(|error| super::map_provider_error(error, "client profile"))?;
+            }
+        }
+        let id = command.id.clone();
+        let (config_revision, record) = self
+            .store
+            .update_client_key(command, context)
+            .await
+            .map_err(map_client_key_write_error)?;
+        publish_committed(self.snapshot.as_ref(), config_revision).await?;
+        Ok(ClientKeyMutation {
+            config_revision,
+            record: Some(record),
+            id,
+        })
+    }
+
+    async fn set_enabled(
+        &self,
+        context: &MutationContext,
+        command: SetClientKeyEnabled,
+    ) -> Result<ClientKeyMutation, AdminError> {
+        let id = command.id.clone();
+        let (config_revision, record) =
+            self.store
+                .set_client_key_enabled(command, context)
+                .await
+                .map_err(|error| map_store_error(error, "client API key"))?;
+        publish_committed(self.snapshot.as_ref(), config_revision).await?;
+        Ok(ClientKeyMutation {
+            config_revision,
+            record: Some(record),
+            id,
+        })
+    }
+
+    async fn delete(
+        &self,
+        context: &MutationContext,
+        command: DeleteClientKey,
+    ) -> Result<ClientKeyMutation, AdminError> {
+        let id = command.id.clone();
+        let config_revision = self
+            .store
+            .delete_client_key(command, context)
+            .await
+            .map_err(|error| map_store_error(error, "client API key"))?;
+        publish_committed(self.snapshot.as_ref(), config_revision).await?;
+        Ok(ClientKeyMutation {
+            config_revision,
+            record: None,
+            id,
+        })
+    }
+}
+
+fn map_client_key_write_error(error: AdminStoreError) -> AdminError {
+    match error.kind() {
+        AdminStoreErrorKind::DuplicateName => AdminError::conflict("名称已存在"),
+        AdminStoreErrorKind::Conflict => AdminError::conflict("API Key 已存在，请使用其他密钥"),
+        _ => map_store_error(error, "client API key"),
+    }
+}
+
+fn validate_cursor(query: &ClientKeyListQuery) -> Result<(), AdminError> {
+    let Some(cursor) = &query.cursor else {
+        return Ok(());
+    };
+    if cursor.sort != query.sort {
+        return Err(AdminError::invalid(
+            "Client API Key 游标排序与查询条件不一致",
+        ));
+    }
+    let matches = matches!(
+        (cursor.sort.field, &cursor.value),
+        (ClientKeySortField::Name, ClientKeyCursorValue::Name(value)) if !value.trim().is_empty()
+    ) || matches!(
+        (cursor.sort.field, &cursor.value),
+        (
+            ClientKeySortField::Enabled,
+            ClientKeyCursorValue::Enabled(_)
+        ) | (
+            ClientKeySortField::CreatedAt,
+            ClientKeyCursorValue::CreatedAt(_)
+        ) | (
+            ClientKeySortField::LastUsedAt,
+            ClientKeyCursorValue::LastUsedAt(_)
+        )
+    );
+    if matches {
+        Ok(())
+    } else {
+        Err(AdminError::invalid("Client API Key 游标不合法"))
+    }
+}
+
+// 原生与插件创建共用相同的密钥生成规则
+pub(super) fn generate_key() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    format!("sk_{}", URL_SAFE_NO_PAD.encode(bytes))
+}

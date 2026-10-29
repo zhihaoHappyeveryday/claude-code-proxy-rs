@@ -1,0 +1,26 @@
+claude-code-proxy-rs
+
+This project includes code from codex-proxy-rs:
+https://github.com/zyycn/codex-proxy-rs
+Upstream revision: 005466bcb0f5154f36f495cd8cd34ac267ceaf31
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Modifications by the claude-code-proxy-rs project include application naming,
+browser storage namespaces, local development configuration and verification,
+removal of OpenAI/xAI upstream implementations and product entry points,
+management-only startup, shared TLS trust configuration, Claude API Key account
+management, provider-aware credential rotation, and bounded model-catalog
+connectivity checks, native Anthropic Messages JSON/SSE forwarding, bounded
+usage observation, execution deadlines, and Claude Code configuration export
+with the corresponding frontend and HTTP acceptance tests.
+Subsequent changes replace API Key onboarding with Claude Code OAuth/Setup Token,
+PKCE authorization, refresh scheduling, proxy-only Bearer transport, and the
+corresponding account management UI and isolated HTTP acceptance tests.
+Further changes add unified Claude client identity configuration, per-account
+overrides, locally captured TLS templates, HTTPS proxy transport, and regression tests.
+The backend workspace and frontend design originate from the upstream project.
+Original third-party package names and provider protocol identifiers are retained.
+
+The frontend consumes @codex-proxy/ui from zyycn/codex-proxy-ui under its own
+license. Package provenance and the fixed revision are recorded in the lockfile.
+The sub2api project is a design reference; no sub2api source is included here.

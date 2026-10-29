@@ -1,0 +1,227 @@
+{
+  "client_version": "2.1.312 (Claude Code)",
+  "executable_sha256": "6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620",
+  "mode": "bare, fake API key, local HTTPS CONNECT proxy, sandboxed loopback only",
+  "identity": {
+    "user-agent": "claude-cli/2.1.312 (external, sdk-cli)",
+    "x-stainless-arch": "arm64",
+    "x-stainless-os": "MacOS",
+    "x-stainless-package-version": "0.128.0",
+    "x-stainless-runtime": "node",
+    "x-stainless-runtime-version": "v26.12.1"
+  },
+  "hello": {
+    "legacy_version": 771,
+    "session_id_length": 32,
+    "ciphers": [
+      4865,
+      4866,
+      4867,
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49161,
+      49171,
+      49162,
+      49172,
+      156,
+      157,
+      47,
+      53
+    ],
+    "compression": "00",
+    "extensions": [
+      {
+        "type": 0,
+        "value": "000c0000096c6f63616c686f7374"
+      },
+      {
+        "type": 23,
+        "value": ""
+      },
+      {
+        "type": 65281,
+        "value": "00"
+      },
+      {
+        "type": 10,
+        "value": [
+          4588,
+          29,
+          23,
+          24
+        ]
+      },
+      {
+        "type": 11,
+        "value": "0100"
+      },
+      {
+        "type": 35,
+        "value": ""
+      },
+      {
+        "type": 16,
+        "value": "000908687474702f312e31"
+      },
+      {
+        "type": 5,
+        "value": "0100000000"
+      },
+      {
+        "type": 13,
+        "value": [
+          1027,
+          2052,
+          1025,
+          1283,
+          2053,
+          1281,
+          2054,
+          1537,
+          2055,
+          1539,
+          513
+        ]
+      },
+      {
+        "type": 18,
+        "value": ""
+      },
+      {
+        "type": 51,
+        "value": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 29,
+            "length": 32
+          }
+        ]
+      },
+      {
+        "type": 45,
+        "value": "0101"
+      },
+      {
+        "type": 43,
+        "value": [
+          772,
+          771
+        ]
+      }
+    ]
+  },
+  "proxy_hello": {
+    "legacy_version": 771,
+    "session_id_length": 32,
+    "ciphers": [
+      4865,
+      4866,
+      4867,
+      49195,
+      49199,
+      49196,
+      49200,
+      52393,
+      52392,
+      49161,
+      49171,
+      49162,
+      49172,
+      156,
+      157,
+      47,
+      53
+    ],
+    "compression": "00",
+    "extensions": [
+      {
+        "type": 0,
+        "value": "000c0000096c6f63616c686f7374"
+      },
+      {
+        "type": 23,
+        "value": ""
+      },
+      {
+        "type": 65281,
+        "value": "00"
+      },
+      {
+        "type": 10,
+        "value": [
+          4588,
+          29,
+          23,
+          24
+        ]
+      },
+      {
+        "type": 11,
+        "value": "0100"
+      },
+      {
+        "type": 35,
+        "value": ""
+      },
+      {
+        "type": 16,
+        "value": "000908687474702f312e31"
+      },
+      {
+        "type": 5,
+        "value": "0100000000"
+      },
+      {
+        "type": 13,
+        "value": [
+          1027,
+          2052,
+          1025,
+          1283,
+          2053,
+          1281,
+          2054,
+          1537,
+          2055,
+          1539,
+          513
+        ]
+      },
+      {
+        "type": 18,
+        "value": ""
+      },
+      {
+        "type": 51,
+        "value": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 29,
+            "length": 32
+          }
+        ]
+      },
+      {
+        "type": 45,
+        "value": "0101"
+      },
+      {
+        "type": 43,
+        "value": [
+          772,
+          771
+        ]
+      }
+    ]
+  }
+}
